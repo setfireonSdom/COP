@@ -4,52 +4,60 @@ Date: 2026-11-03.
 
 ## What changed and why
 
-`@playwright/test@1.64.1` bundles Chromium **156.0.8078.4**. Four Chromium
-advisories published 2026-10-27 are fixed only in **156.0.8078.73**:
+The installed `playwright-core@1.64.1` browser manifest pins Chromium
+**156.0.8078.4**, below the **156.0.8078.73** fix boundary identified for:
 
-| CVE | Area | Severity |
-|---|---|---|
-| CVE-2026-118306 | FileSystem memory corruption (escape outside sandbox) | Critical |
-| CVE-2026-118331 | FileAPI input validation | High |
-| CVE-2026-118344 | Layout use-after-free | Critical |
-| CVE-2026-118348 | Skia input validation | High |
+| Advisory | Area |
+|---|---|
+| [CVE-2026-118306](https://nvd.nist.gov/vuln/detail/CVE-2026-118306) | FileSystem |
+| [CVE-2026-118331](https://nvd.nist.gov/vuln/detail/CVE-2026-118331) | FileAPI |
+| [CVE-2026-118344](https://nvd.nist.gov/vuln/detail/CVE-2026-118344) | Layout |
+| [CVE-2026-118348](https://nvd.nist.gov/vuln/detail/CVE-2026-118348) | Skia |
 
-Separately, Playwright's `chromiumSandbox` option **defaults to `false`**, so a
-compromised renderer is not contained even on an up-to-date build.
+Playwright's `chromiumSandbox` option **defaults to `false`**. Repository test
+entrypoints explicitly request sandboxing; an option is not proof that all OS
+isolation mechanisms are effective.
 
 Verified locally, not assumed:
 
 - `playwright-core/browsers.json` in 1.64.1 pins `156.0.8078.4`.
 - The type definition states `chromiumSandbox?: boolean` → `Defaults to false`.
-- The machine's system Chrome is `156.0.8078.80`, above the fix boundary.
-- `~/Library/Caches/ms-playwright` did not exist: the bundled browser had never
-  been downloaded here. Prior browser runs used `PLAYWRIGHT_CHANNEL=chrome`.
+- System Chrome reported `156.0.8078.80` during the earlier check. Each new run
+  checks the actual launched version again.
+- The default local browser cache was absent at the earlier inspection. That
+  does **not** prove browsers were never installed or exclude a custom cache.
 
-`pnpm install` does **not** download browsers; only `playwright install` does.
+Installing this test package does not itself install its browser. Do not run
+`playwright install` to provision Chromium for this repository.
 
 ## The boundary now enforced
 
-1. **No bundled Chromium.** `apps/web/scripts/safe-browser.mjs` refuses to launch
-   when the channel is `chromium`, and every browser script goes through
-   `launchChrome()`.
-2. **Sandbox on.** `chromiumSandbox: true` is set explicitly in both
-   `safe-browser.mjs` and `playwright.config.ts`. No `--no-sandbox`-style flags
-   are passed, because a stray flag can undo the option.
-3. **Version floor.** `launchChrome()` compares the running major version against
-   `156.0.8078.73` and fails the check if the browser is older, instead of
-   silently testing on a vulnerable engine.
-4. **CI does not install the pinned browser.** The e2e job requires a runner
-   Chrome and fails loudly if none exists.
+1. **System Chrome allowlist.** `safe-browser.mjs` accepts only `chrome`,
+   `chrome-beta`, `chrome-dev`, and `chrome-canary`. Bundled aliases such as
+   `chromium-headless-shell` are rejected before launch. There is no fallback.
+2. **One policy.** Nine UI regression scripts and the worker-scoped browser
+   fixture in `e2e/fixtures.ts` call `launchChrome()`. The runner config obtains
+   channel/sandbox options from the same module. This is test tooling, not a
+   product dependency.
+3. **Sandbox requested.** The launcher passes `chromiumSandbox: true` and exposes
+   no arbitrary launch flags or executable-path override.
+4. **Four-component version check before any page.** After launch, unknown,
+   malformed, or older-than-floor versions are rejected and the browser is
+   closed. This floor addresses the identified advisories, not future CVEs.
+5. **CI preflight uses the same launcher.** It launches and closes system Chrome
+   without creating a page. Printing a version or finding a Chromium binary is
+   not sufficient. CI sets `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1`; it never runs
+   the bundled browser installer. The test dependency is pinned exactly.
 
 ## Architecture impact: none on product code
 
-The change is confined to `apps/web/scripts/`, `apps/web/playwright.config.ts`,
-`apps/web/package.json`, `pnpm-lock.yaml`, and the CI e2e job.
+Browser policy changes are confined to web test scripts, tests, E2E fixtures and
+configuration, the test dependency lock, and CI.
 
 - No file under `apps/web/app`, `apps/web/components`, `apps/web/lib`,
   `packages/`, or `backend/app` imports Playwright.
 - The backend has no reference to it.
-- Product types, schemas, and published artifacts are untouched.
+- The browser policy does not change product contracts or published artifacts.
 
 The dependency direction stays one-way: tests depend on the app, never the
 reverse. Adding a guard inside the test layer is therefore a leaf change, not an
@@ -61,16 +69,23 @@ architectural one.
   run; it cannot patch the browser.
 - It does not audit the rest of the dependency tree. The registry mirror in use
   has no audit endpoint, so `pnpm audit` is unavailable here.
-- Chromium severity ratings come from Google's advisory text via NVD, not from an
-  independent assessment.
+- It does not prevent a person from invoking Playwright directly or installing
+  browsers elsewhere. Its enforcement covers repository test entrypoints.
+- It does not claim the absence of a default cache proves no past exposure.
 
 ## Reproducing the checks
 
 ```bash
-# Version comparison and bundled-engine refusal, no browser needed
+# Guard regression tests use mocked browsers and make no browser launch
 cd apps/web
-node --input-type=module -e "import('./scripts/safe-browser.mjs').then(m=>console.log(m.compareVersions('156.0.8078.4', m.MIN_SAFE_CHROMIUM)))"
+pnpm exec vitest run tests/browser-security.test.ts
 
-# Full browser regressions (requires a running stack: make up-local)
-for s in scripts/check-*.mjs; do node "$s" || echo "FAIL $s"; done
+# Real system Chrome preflight, no server required
+node scripts/check-browser-security.mjs
+
+# Isolated draft UI with mocked API, no real project writes/server required
+node scripts/check-draft-review-ui.mjs
+
+# Full E2E still needs a separately authorised disposable local stack
+pnpm test:e2e
 ```

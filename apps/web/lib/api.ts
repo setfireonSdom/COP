@@ -31,6 +31,25 @@ export interface VersionSummary {
   created_at: string;
 }
 
+export interface PublicationIssue {
+  code: string;
+  entity_ref: string;
+  explanation: string;
+  recommended_change: string;
+}
+
+export interface PublicationFindings {
+  content_gate?: PublicationIssue[] | null;
+  concept_frame?: PublicationIssue[] | null;
+  unresolved_evidence?: { entity_ref: string; collection: string; source_id: string }[] | null;
+}
+
+export interface PublishCheck extends PublicationFindings {
+  updated_at: string;
+}
+
+export type PublishResult = VersionSummary & PublicationFindings;
+
 export interface ResolvedSource {
   id: string;
   title: string;
@@ -420,9 +439,18 @@ export function createDraftFromVersion(
   );
 }
 
-export function publishDraft(draftId: string, changeSummary: string): Promise<VersionSummary> {
-  return post<VersionSummary>(`/drafts/${encodeURIComponent(draftId)}/publish`, {
+export function checkDraftPublication(draftId: string): Promise<PublishCheck> {
+  return request<PublishCheck>(`/drafts/${encodeURIComponent(draftId)}/publish-check`);
+}
+
+export function publishDraft(
+  draftId: string,
+  changeSummary: string,
+  reviewedUpdatedAt?: string,
+): Promise<PublishResult> {
+  return post<PublishResult>(`/drafts/${encodeURIComponent(draftId)}/publish`, {
     change_summary: changeSummary,
+    reviewed_updated_at: reviewedUpdatedAt,
   });
 }
 

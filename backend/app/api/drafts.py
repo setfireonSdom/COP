@@ -7,6 +7,7 @@ Endpoints per the API contract (`10-api-contracts.md` §5):
 - `GET    /projects/{project_id}/draft`
 - `PATCH  /drafts/{draft_id}/metadata`
 - `PATCH  /drafts/{draft_id}/{entity_type}/{entity_id}`
+- `GET    /drafts/{draft_id}/publish-check`  read-only publication review
 - `POST   /drafts/{draft_id}/publish`
 - `DELETE /drafts/{draft_id}`
 
@@ -36,8 +37,8 @@ from app.domain.drafting import (
     summarize,
     with_locks,
 )
+from app.domain.quality import L2, blocking_issues, check_artifact, concept_frame_issues
 from app.domain.validation import validate_artifact
-from app.harness.steps.critic_rules import concept_frame_failures, content_gate_failures
 from app.harness.steps.h120_validate import resolve_schema_path
 from app.jobs.runner import project_source_ids
 
@@ -131,6 +132,39 @@ class VersionOut(BaseModel):
 
 class PublishRequest(BaseModel):
     change_summary: str = Field(default="", max_length=1000)
+    # Optional for existing API clients; the UI always supplies the reviewed
+    # draft revision so an edit in another tab cannot invalidate its preflight.
+    reviewed_updated_at: datetime | None = None
+
+
+class PublishCheck(BaseModel):
+    updated_at: datetime
+    content_gate: list[dict[str, Any]]
+    concept_frame: list[dict[str, Any]]
+    unresolved_evidence: list[dict[str, Any]]
+
+
+def _publication_artifact(draft: Draft) -> dict[str, Any]:
+    try:
+        return validate_artifact(draft.artifact_json, resolve_schema_path()).model_dump(mode="json")
+    except Exception as exc:  # noqa: BLE001 - both validators can reject the draft
+        raise CopStudioError(
+            "DRAFT_INVALID",
+            f"This draft cannot be published because it is invalid: {exc}",
+            status_code=422,
+            details={"reason": str(exc)},
+        ) from exc
+
+
+def _publication_check(db: Session, draft: Draft, stored: dict[str, Any]) -> PublishCheck:
+    return PublishCheck(
+        updated_at=draft.updated_at,
+        content_gate=[
+            issue.as_dict() for issue in blocking_issues(check_artifact(stored, levels=[L2]))
+        ],
+        concept_frame=[issue.as_dict() for issue in concept_frame_issues(stored)],
+        unresolved_evidence=unresolved_evidence(stored, project_source_ids(db, draft.project_id)),
+    )
 
 
 def require_project(db: Session, project_id: uuid.UUID) -> Project:
@@ -309,6 +343,14 @@ def patch_draft_entity(
     return _draft_out(draft)
 
 
+@router.get("/drafts/{draft_id}/publish-check", response_model=PublishCheck)
+def check_draft_publication(draft_id: uuid.UUID, db: DbSession) -> PublishCheck:
+    """Read-only preflight; findings are shown before the user's final confirmation."""
+    draft = _require_draft(db, draft_id)
+    require_project(db, draft.project_id)
+    return _publication_check(db, draft, _publication_artifact(draft))
+
+
 @router.post("/drafts/{draft_id}/publish", response_model=VersionOut)
 def publish_draft(draft_id: uuid.UUID, body: PublishRequest, db: DbSession) -> VersionOut:
     """Freeze the draft as a new immutable version.
@@ -323,31 +365,32 @@ def publish_draft(draft_id: uuid.UUID, body: PublishRequest, db: DbSession) -> V
     must be able to. What they must not be able to do is publish it *quietly*,
     which is why the response carries `content_gate` and the browser says so.
     """
-    draft = _require_draft(db, draft_id)
+    # Serialise against edits while validating the reviewed revision and freezing
+    # it. Existing PATCH writes take a row lock when updating the same draft.
+    draft = db.scalar(select(Draft).where(Draft.id == draft_id).with_for_update())
+    if draft is None:
+        raise NotFoundError("Draft not found", code="DRAFT_NOT_FOUND")
     project = require_project(db, draft.project_id)
+    if body.reviewed_updated_at is not None and body.reviewed_updated_at != draft.updated_at:
+        raise CopStudioError(
+            "DRAFT_CHANGED",
+            "The draft changed after review. Check it again before publishing.",
+            status_code=409,
+        )
 
     # Re-validate at publish time. Writes validate too, but publishing is the
     # moment the artifact becomes permanent history, so it gets its own check
     # rather than trusting that no write path was missed.
-    try:
-        artifact = validate_artifact(draft.artifact_json, resolve_schema_path())
-    except Exception as exc:  # noqa: BLE001 - jsonschema and pydantic raise different types
-        raise CopStudioError(
-            "DRAFT_INVALID",
-            f"This draft cannot be published because it is invalid: {exc}",
-            status_code=422,
-            details={"reason": str(exc)},
-        ) from exc
-
     # Checked on the artifact as it will be stored, not the incoming model, so
     # the reported findings describe the version rather than the request.
-    stored = artifact.model_dump(mode="json")
-    content_gate = content_gate_failures(stored)
-    concept_frame = concept_frame_failures(stored)
+    stored = _publication_artifact(draft)
+    findings = _publication_check(db, draft, stored)
+    content_gate = findings.content_gate
+    concept_frame = findings.concept_frame
     # Every citation must resolve to a source this project owns. A ref the user
     # cannot open is the R3 failure, and reporting it here is what stops it
     # becoming permanent history silently.
-    orphans = unresolved_evidence(stored, project_source_ids(db, project.id))
+    orphans = findings.unresolved_evidence
     if content_gate or concept_frame or orphans:
         logger.info(
             "Publishing %s with %d content-gate findings, %d concept-frame findings "
@@ -383,7 +426,7 @@ def publish_draft(draft_id: uuid.UUID, body: PublishRequest, db: DbSession) -> V
         version_number=next_version_number(numbers),
         parent_version_id=parent.id if parent is not None else None,
         run_id=draft.source_run_id,
-        artifact_json=artifact.model_dump(mode="json"),
+        artifact_json=stored,
         change_summary=body.change_summary.strip() or "Manual draft published",
         created_by="user",
     )

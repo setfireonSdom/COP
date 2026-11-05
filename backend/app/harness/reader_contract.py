@@ -86,8 +86,8 @@ CONCEPT_GUIDANCE = """Teach the Concepts, not just name them:
 - Explain where a model or abstraction is useful and where it stops fitting the
   observed case; never identify the abstraction with reality itself. Use only
   Concepts needed to support the reasoning, not a fixed concept count.
-- Every Concept must be used: referenced by a Stage it supports or by an
-  Operation that acts on it. A Concept that only cross-links other Concepts is
+- Every Concept must be used: referenced by a Stage it supports or by a
+  Stage-bound Operation that acts on it. A Concept that only cross-links other Concepts is
   a glossary entry, and it will be rejected.
 """
 

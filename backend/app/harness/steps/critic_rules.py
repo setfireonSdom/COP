@@ -18,9 +18,9 @@ from typing import Any
 
 from app.domain.quality import (
     CONCEPT_FRAME_CODES,
-    L1,
     L2,
     blocking_issues,
+    concept_frame_issues,
 )
 from app.domain.quality import check_artifact as check_operational_completeness
 
@@ -72,7 +72,7 @@ def content_issues(artifact: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def content_gate_failures(artifact: dict[str, Any]) -> list[dict[str, Any]]:
-    """Only the findings that must block publication."""
+    """Findings that require candidate attention and are reported before publication."""
     return [
         issue.as_dict()
         for issue in blocking_issues(check_operational_completeness(artifact, levels=[L2]))
@@ -87,11 +87,7 @@ def concept_frame_failures(artifact: dict[str, Any]) -> list[dict[str, Any]]:
     whole route leans on. They reach the same `needs_attention` status but are
     reported by name so a repair can target the concept instead of a Stage.
     """
-    return [
-        issue.as_dict()
-        for issue in check_operational_completeness(artifact, levels=[L1])
-        if issue.code in CONCEPT_FRAME_CODES
-    ]
+    return [issue.as_dict() for issue in concept_frame_issues(artifact)]
 
 
 def check_artifact(artifact: dict[str, Any]) -> list[dict[str, Any]]:

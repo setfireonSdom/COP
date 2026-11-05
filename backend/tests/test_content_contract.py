@@ -28,7 +28,6 @@ import pytest
 
 from app.domain.quality import (
     CONCEPT_CIRCULAR_DEFINITION,
-    CONCEPT_MIN_DEFINITION_CHARS,
     L1,
     L2,
     MISSING_IMPLEMENTATION_DETAIL,
@@ -305,7 +304,7 @@ async def test_the_generated_candidate_has_usable_concept_explanations() -> None
     artifact = (await generate()).context.artifact
     assert artifact is not None
     for concept in artifact["concepts"]:
-        assert len(concept["definition"]) >= CONCEPT_MIN_DEFINITION_CHARS
+        assert concept["definition"].strip()
         assert concept["definition"].strip() != concept["name"].strip()
         assert concept["role"].strip()
     assert check_artifact(artifact, levels=[L1]) == []

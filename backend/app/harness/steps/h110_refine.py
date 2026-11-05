@@ -12,6 +12,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+from app.domain.quality import CONCEPT_UNUSED
 from app.harness.context import HarnessContext, HarnessEvent, StepResult
 from app.harness.prompts import build_refine_prompt
 from app.harness.schemas import REFINABLE_FIELDS, REFINE_SCHEMA, revision_value_schema
@@ -162,7 +163,21 @@ class RefineStep:
                 metrics={"skipped": True},
             )
 
-        issues = report.get("issues") or []
+        all_issues = report.get("issues") or []
+        manual = [issue for issue in all_issues if issue.get("code") == CONCEPT_UNUSED]
+        issues = [issue for issue in all_issues if issue.get("code") != CONCEPT_UNUSED]
+        manual_warnings = [
+            f"Concept '{issue.get('entity_ref')}' needs structural review; text-only repair "
+            "cannot change bindings or remove Concepts."
+            for issue in manual
+        ]
+        if manual and not issues:
+            return StepResult.success(
+                {},
+                events=[HarnessEvent("step.completed", {"step": self.name, "skipped": True})],
+                warnings=manual_warnings,
+                metrics={"skipped": True, "manual_review": len(manual)},
+            )
         locked_paths = list(ctx.locked_paths or [])
         language = ctx.settings.get("language", "auto")
         system, user = build_refine_prompt(
@@ -175,7 +190,9 @@ class RefineStep:
         updated, applied, rejected = apply_revisions(
             artifact, payload.get("revisions") or [], locked_paths
         )
-        warnings = [f"Refiner proposal skipped: {item.get('reason')}" for item in rejected]
+        warnings = manual_warnings + [
+            f"Refiner proposal skipped: {item.get('reason')}" for item in rejected
+        ]
         return StepResult.success(
             {"artifact": updated},
             events=[

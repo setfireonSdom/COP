@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 
-import { ApiError, discardDraft, publishDraft } from "../lib/api";
-import type { DraftCounts } from "../lib/api";
+import { ApiError, checkDraftPublication, discardDraft, publishDraft } from "../lib/api";
+import type { DraftCounts, PublishCheck, PublishResult } from "../lib/api";
+import { hasPublicationWarnings, PublicationWarnings } from "./publication-warnings";
 
 interface DraftToolbarProps {
   projectId: string;
@@ -25,13 +26,36 @@ export function DraftToolbar({ projectId, draftId, counts, hasPublishedVersion }
   const [summary, setSummary] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [check, setCheck] = useState<PublishCheck | null>(null);
+  const [published, setPublished] = useState<PublishResult | null>(null);
+
+  async function reviewPublication() {
+    setMode("publish");
+    setPending(true);
+    setError(null);
+    setCheck(null);
+    try {
+      setCheck(await checkDraftPublication(draftId));
+    } catch (cause) {
+      setError(cause instanceof ApiError ? cause.message : "Publication checks could not be completed. Try again.");
+    } finally {
+      setPending(false);
+    }
+  }
 
   async function run(action: "publish" | "discard") {
+    if (action === "publish" && !check) return;
     setPending(true);
     setError(null);
     try {
       if (action === "publish") {
-        await publishDraft(draftId, summary);
+        const result = await publishDraft(draftId, summary, check!.updated_at);
+        if (hasPublicationWarnings(result)) {
+          // Publishing succeeded. Keep the receipt visible and remove all
+          // draft actions, so an unexpected warning is not lost on navigation.
+          setPublished(result);
+          return;
+        }
       } else {
         await discardDraft(draftId);
       }
@@ -39,11 +63,20 @@ export function DraftToolbar({ projectId, draftId, counts, hasPublishedVersion }
       // not the disappearing draft route (which would turn success into a 404).
       window.location.assign(`/projects/${projectId}`);
     } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 409) setCheck(null);
       setError(cause instanceof ApiError ? cause.message : "That action could not be completed.");
     } finally {
       setPending(false);
     }
   }
+
+  if (published) return (
+    <section className="draft-toolbar" aria-label="Publication receipt" role="status">
+      <h2>Published with warnings</h2>
+      <PublicationWarnings findings={published} published />
+      <a className="primary-button" href={`/projects/${projectId}`}>Open project</a>
+    </section>
+  );
 
   return (
     <section className="draft-toolbar" id="draft-actions" aria-label="Draft actions">
@@ -55,10 +88,8 @@ export function DraftToolbar({ projectId, draftId, counts, hasPublishedVersion }
         <div className="draft-toolbar-buttons">
           <button
             className="primary-button"
-            onClick={() => {
-              setMode("publish");
-              setError(null);
-            }}
+            disabled={pending}
+            onClick={() => void reviewPublication()}
             type="button"
           >
             Publish draft
@@ -66,21 +97,24 @@ export function DraftToolbar({ projectId, draftId, counts, hasPublishedVersion }
           <details className="draft-more-actions">
             <summary>More</summary>
             <button
-            className="draft-discard-button"
-            onClick={() => {
-              setMode("discard");
-              setError(null);
-            }}
-            type="button"
-          >
-            Discard draft
-          </button>
+              className="draft-discard-button"
+              disabled={pending}
+              onClick={() => {
+                setMode("discard");
+                setError(null);
+              }}
+              type="button"
+            >
+              Discard draft
+            </button>
           </details>
         </div>
       </div>
 
       {mode === "publish" && (
         <div className="draft-confirm">
+          {check && <PublicationWarnings findings={check} />}
+          {!check && pending && <p role="status">Checking this draft…</p>}
           <label className="draft-field">
             <span>
               What changed in this version<em>optional</em>
@@ -97,10 +131,11 @@ export function DraftToolbar({ projectId, draftId, counts, hasPublishedVersion }
             This does not share anything publicly. {hasPublishedVersion && "Your current published version stays unchanged."}
           </p>
           <div className="draft-actions">
-            <button className="primary-button" disabled={pending} onClick={() => void run("publish")} type="button">
-              {pending ? "Publishing…" : "Confirm publish"}
+            <button className="primary-button" disabled={pending || !check} onClick={() => void run("publish")} type="button">
+              {pending ? "Please wait…" : check && hasPublicationWarnings(check) ? "Publish with warnings" : "Confirm publish"}
             </button>
-            <button className="secondary-button" onClick={() => setMode("idle")} type="button">
+            {!check && !pending && <button className="secondary-button" onClick={() => void reviewPublication()} type="button">Check again</button>}
+            <button className="secondary-button" disabled={pending} onClick={() => setMode("idle")} type="button">
               Cancel
             </button>
           </div>
@@ -119,7 +154,7 @@ export function DraftToolbar({ projectId, draftId, counts, hasPublishedVersion }
             <button className="danger-button" disabled={pending} onClick={() => void run("discard")} type="button">
               {pending ? "Discarding…" : "Discard the draft"}
             </button>
-            <button className="secondary-button" onClick={() => setMode("idle")} type="button">
+            <button className="secondary-button" disabled={pending} onClick={() => setMode("idle")} type="button">
               Keep editing
             </button>
           </div>

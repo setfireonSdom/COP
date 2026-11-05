@@ -39,12 +39,35 @@ try {
   const errors = [];
   let publishes = 0;
   let discards = 0;
+  let previewFails = false;
+  let warn = false;
+  let stale = false;
+  let revision = "2026-11-03T00:00:00Z";
+  const warnings = () => ({
+    content_gate: [],
+    concept_frame: warn ? [{ code: "CONCEPT_UNUSED", entity_ref: "concept.orphan", explanation: "No Stage uses this Concept.", recommended_change: "Review the bindings manually; text repair cannot change them." }] : [],
+    unresolved_evidence: [],
+  });
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("http://draft.test/**", async route => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/") return route.fulfill({ contentType: "text/html", body: html });
     if (path === "/projects/p") return route.fulfill({ contentType: "text/html", body: "<h1>Project workspace</h1>" });
-    if (path === "/api/v1/drafts/d/publish") { publishes++; return route.fulfill({ json: { id: "v1" } }); }
+    if (path === "/api/v1/drafts/d/publish-check") {
+      assert.equal(route.request().method(), "GET");
+      if (previewFails) return route.fulfill({ status: 503, json: { error: { message: "Checks unavailable" } } });
+      return route.fulfill({ json: { updated_at: revision, ...warnings() } });
+    }
+    if (path === "/api/v1/drafts/d/publish") {
+      publishes++;
+      assert.equal(route.request().postDataJSON().reviewed_updated_at, revision);
+      if (stale) {
+        stale = false;
+        revision = "2026-11-03T00:01:00Z";
+        return route.fulfill({ status: 409, json: { error: { code: "DRAFT_CHANGED", message: "The draft changed after review." } } });
+      }
+      return route.fulfill({ json: { id: "v1", ...warnings() } });
+    }
     if (path === "/api/v1/drafts/d" && route.request().method() === "DELETE") { discards++; return route.fulfill({ status: 204 }); }
     throw new Error(`Unexpected request ${path}`);
   });
@@ -73,6 +96,35 @@ try {
   await page.getByRole("button", { name: "Discard the draft", exact: true }).click();
   await page.waitForURL("http://draft.test/projects/p");
   assert.equal(discards, 1);
+
+  // Failed checks cannot enable publishing. Retry must be explicit and read-only.
+  warn = true;
+  previewFails = true;
+  await page.goto("http://draft.test/");
+  await page.getByRole("button", { name: "Publish draft", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "Checks unavailable" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Confirm publish", exact: true }).isEnabled(), false);
+  assert.equal(publishes, 1);
+  previewFails = false;
+  await page.getByRole("button", { name: "Check again", exact: true }).click();
+  await page.getByRole("region", { name: "Publication warnings" }).waitFor();
+  for (const width of [390, 1280]) for (const colorScheme of ["light", "dark"]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.emulateMedia({ colorScheme });
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "warnings must fit both themes and widths");
+  }
+  stale = true;
+  await page.getByRole("button", { name: "Publish with warnings", exact: true }).click();
+  await page.getByRole("alert").filter({ hasText: "draft changed" }).waitFor();
+  assert.equal(await page.getByRole("button", { name: "Confirm publish", exact: true }).isEnabled(), false);
+  await page.getByRole("button", { name: "Check again", exact: true }).click();
+  await page.getByRole("button", { name: "Publish with warnings", exact: true }).click();
+  await page.getByRole("heading", { name: "Published with warnings", exact: true }).waitFor();
+  assert.equal(page.url(), "http://draft.test/", "publication receipt must not be lost on redirect");
+  assert.equal(await page.getByRole("button", { name: "Publish draft", exact: true }).count(), 0);
+  assert.equal(publishes, 3);
+  await page.getByRole("link", { name: "Open project", exact: true }).click();
+  await page.waitForURL("http://draft.test/projects/p");
   assert.deepEqual(errors, []);
-  console.log("Browser PASS: readable draft, mobile content, two-step publish/discard, project navigation after completion.");
+  console.log("Browser PASS: read-only preflight, visible warnings, fail-closed checks, stale-review rejection/retry, publication receipt, two widths × two themes, mock-only writes.");
 } finally { await browser.close(); }

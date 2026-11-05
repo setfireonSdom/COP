@@ -1,6 +1,9 @@
 import { defineConfig, devices } from "@playwright/test";
 
 import { API_URL, BASE_URL } from "./e2e/endpoints";
+import { chromeLaunchOptions } from "./scripts/safe-browser.mjs";
+
+const chrome = chromeLaunchOptions();
 
 /**
  * E2E runs against the real Compose stack, not a mock.
@@ -32,14 +35,8 @@ export default defineConfig({
     baseURL: BASE_URL,
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
-    // Never fall back to Playwright's bundled Chromium: 1.64.1 pins
-    // 156.0.8078.4, which is below the 156.0.8078.73 fix for
-    // CVE-2026-118306/118331/118344/118348. The runner must provide Chrome.
-    channel: "chrome",
-    // Playwright defaults this to false, which leaves a compromised renderer
-    // uncontained. These tests load only local pages, but the default is not
-    // worth inheriting.
-    launchOptions: { chromiumSandbox: true },
+    channel: chrome.channel,
+    launchOptions: { chromiumSandbox: chrome.chromiumSandbox },
   },
   globalSetup: "./e2e/global-setup.ts",
   globalTeardown: "./e2e/global-teardown.ts",

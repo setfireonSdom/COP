@@ -136,6 +136,58 @@ class TestDraftCreation:
         assert response.json()["error"]["code"] == "DRAFT_NOT_FOUND"
 
 
+class TestPublicationReview:
+    def test_preflight_is_read_only_and_agrees_with_publish_findings(self, client, db):
+        project_id = create_project(db)
+        artifact = load_fixture()
+        concept = artifact["concepts"][0]
+        concept["definition"] = concept["name"]
+        draft_id = make_draft(db, project_id, artifact)
+        before = client.get(f"/api/v1/projects/{project_id}/draft").json()
+
+        response = client.get(f"/api/v1/drafts/{draft_id}/publish-check")
+        assert response.status_code == 200, response.text
+        review = response.json()
+        assert any(
+            issue["code"] == "CONCEPT_CIRCULAR_DEFINITION" for issue in review["concept_frame"]
+        )
+        assert client.get(f"/api/v1/projects/{project_id}/draft").json() == before
+        assert list(db.scalars(select(COPVersion))) == []
+
+        published = client.post(
+            f"/api/v1/drafts/{draft_id}/publish",
+            json={"reviewed_updated_at": review["updated_at"]},
+        )
+        assert published.status_code == 200, published.text
+        for key in ("concept_frame", "content_gate", "unresolved_evidence"):
+            assert (published.json()[key] or []) == review[key]
+
+    def test_an_edit_after_preflight_requires_another_review(self, client, db):
+        project_id = create_project(db)
+        draft_id = make_draft(db, project_id)
+        review = client.get(f"/api/v1/drafts/{draft_id}/publish-check").json()
+        concept_id = load_fixture()["concepts"][0]["id"]
+        patched = client.patch(
+            f"/api/v1/drafts/{draft_id}/concepts/{concept_id}",
+            json={"definition": "Edited after reviewing this draft."},
+        )
+        assert patched.status_code == 200
+        response = client.post(
+            f"/api/v1/drafts/{draft_id}/publish",
+            json={"reviewed_updated_at": review["updated_at"]},
+        )
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "DRAFT_CHANGED"
+        assert client.get(f"/api/v1/projects/{project_id}/draft").status_code == 200
+        assert list(db.scalars(select(COPVersion))) == []
+
+    def test_invalid_artifacts_cannot_receive_a_publish_preview(self, client, db):
+        draft_id = make_draft(db, create_project(db), {"concepts": []})
+        response = client.get(f"/api/v1/drafts/{draft_id}/publish-check")
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "DRAFT_INVALID"
+
+
 class TestManualEditing:
     def test_an_edit_survives_a_reload(self, client, db):
         """Acceptance: user edits survive refresh."""

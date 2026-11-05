@@ -63,7 +63,8 @@ WEAK_PRACTICE = "WEAK_PRACTICE"
 PRACTICE_WITHOUT_CHECKPOINT = "PRACTICE_WITHOUT_CHECKPOINT"
 EMPTY_EXPANSION_MAP = "EMPTY_EXPANSION_MAP"
 
-#: L1 codes that must be resolved before a new candidate may be published.
+#: L2 findings that prevent a generated candidate being marked `completed`.
+#: Publication still permits incomplete content with explicit warnings.
 #: A Stage the learner cannot act on is not a smaller defect than a missing
 #: one, so the gate is on presence, not on wording.
 BLOCKING_CODES = frozenset(
@@ -191,10 +192,6 @@ def _text(value: Any) -> str:
     return str(value).strip() if isinstance(value, (str, int, float)) else ""
 
 
-#: A definition shorter than this has no room for an object, an action, and the
-#: boundary that makes it usable. `"d"` and `"a thing"` both fail; a genuine one
-#: sentence explanation passes.
-CONCEPT_MIN_DEFINITION_CHARS = 20
 #: Words that carry no explanatory weight on their own. A definition made only of
 #: these plus the Concept's name is a label, not an explanation.
 _LABEL_FILLER = frozenset(
@@ -228,6 +225,9 @@ _LABEL_FILLER = frozenset(
         "那个",
     }
 )
+_DEFINITION_PLACEHOLDERS = frozenset(
+    {"d", "r", "x", "tbd", "todo", "placeholder", "待补充", "待完善", "暂无", "待定", "待填写"}
+)
 
 
 def _meaningful(text: str) -> str:
@@ -242,23 +242,45 @@ def _is_circular(definition: str, name: str) -> bool:
     thoughts into communication") -- that is an explanation. It is circular only
     when removing the name leaves nothing but filler behind.
     """
-    core = _meaningful(definition)
-    label = _meaningful(name)
+    # Preserve English word boundaries. Joining words first turns "is the"
+    # into "isthe", which is no longer recognisable as filler.
+    core = _tokens(definition.casefold())
+    label = _tokens(name.casefold())
     if not core or not label:
         return False
-    if label not in core:
-        return False
-    if core == label:
-        return True
-    remainder = core.replace(label, "")
-    # English filler is separated by word boundaries; CJK filler is a substring
-    # because Chinese has no spaces. Remove both, then require real content left.
-    for word in ("concept", "thing", "object", "term", "idea", "something", "stuff"):
-        remainder = remainder.replace(word, "")
-    for word in ("一个", "一种", "东西", "概念", "术语", "这个", "那个"):
-        remainder = remainder.replace(word, "")
-    tokens = [token for token in _tokens(remainder) if token not in _LABEL_FILLER]
-    return not tokens
+    found_label = False
+    remainder: list[str] = []
+    index = 0
+    while index < len(core):
+        if core[index : index + len(label)] == label:
+            found_label = True
+            index += len(label)
+            continue
+        remainder.append(core[index])
+        index += 1
+    return found_label and _only_filler(remainder)
+
+
+def _only_filler(tokens: list[str]) -> bool:
+    filler = sorted((_tokens(word) for word in _LABEL_FILLER), key=len, reverse=True)
+    index = 0
+    while index < len(tokens):
+        match = next((part for part in filler if tokens[index : index + len(part)] == part), None)
+        if match is None:
+            return False
+        index += len(match)
+    return True
+
+
+def _is_placeholder(definition: str) -> bool:
+    """Detect explicit placeholders, never infer explanatory value from length."""
+    core = _meaningful(definition)
+    return (
+        not core
+        or core in _DEFINITION_PLACEHOLDERS
+        or (set(core) == {"x"})
+        or _only_filler(_tokens(definition.casefold()))
+    )
 
 
 def _tokens(value: str) -> list[str]:
@@ -480,11 +502,13 @@ def _check_concepts(artifact: Mapping[str, Any]) -> list[QualityIssue]:
         return issues
 
     used: set[str] = set()
+    used_operations: set[str] = set()
     for stage in artifact.get("stages") or []:
         if isinstance(stage, Mapping):
             used.update(str(ref) for ref in stage.get("concept_refs") or [])
+            used_operations.update(str(ref) for ref in stage.get("operation_refs") or [])
     for operation in artifact.get("operations") or []:
-        if isinstance(operation, Mapping):
+        if isinstance(operation, Mapping) and str(operation.get("id")) in used_operations:
             used.update(str(ref) for ref in operation.get("acts_on_concept_refs") or [])
     # `related_concept_refs` deliberately does NOT count as use. A cluster of
     # Concepts that only point at each other is still a glossary nobody acts on,
@@ -513,15 +537,14 @@ def _check_concepts(artifact: Mapping[str, Any]) -> list[QualityIssue]:
                     "what becomes possible when it is present.",
                 )
             )
-        elif not definition or len(_meaningful(definition)) < CONCEPT_MIN_DEFINITION_CHARS:
+        elif _is_placeholder(definition):
             issues.append(
                 _issue(
                     CONCEPT_MISSING_EXPLANATION,
                     L1,
                     "concept",
                     concept_id,
-                    f"Concept '{name}' has no usable definition; its definition is empty, "
-                    f"a placeholder, or shorter than {CONCEPT_MIN_DEFINITION_CHARS} characters.",
+                    f"Concept '{name}' has an empty or explicit placeholder definition.",
                     "Explain in plain language what this thing is and what it does, so a "
                     "reader can use it before seeing the name again.",
                 )
@@ -547,10 +570,9 @@ def _check_concepts(artifact: Mapping[str, Any]) -> list[QualityIssue]:
                     L1,
                     "concept",
                     concept_id,
-                    f"Concept '{name}' is declared but no Stage, Operation or related "
-                    f"Concept uses it.",
-                    "Bind it to the Stage that depends on it, or remove it rather than "
-                    "leaving glossary-only entries.",
+                    f"Concept '{name}' is declared but no Stage or Stage-bound Operation uses it.",
+                    "Regenerate the concept frame with Stage bindings, or review the unused "
+                    "Concept manually. Text-only repair cannot change references or remove it.",
                 )
             )
     return issues
@@ -726,6 +748,15 @@ def check_artifact(
 
 def blocking_issues(issues: Iterable[QualityIssue]) -> list[QualityIssue]:
     return [issue for issue in issues if issue.blocking]
+
+
+def concept_frame_issues(artifact: Mapping[str, Any]) -> list[QualityIssue]:
+    """Shared domain policy for generation and publication; no harness dependency."""
+    return [
+        issue
+        for issue in check_artifact(artifact, levels=[L1])
+        if issue.code in CONCEPT_FRAME_CODES
+    ]
 
 
 def completeness_summary(

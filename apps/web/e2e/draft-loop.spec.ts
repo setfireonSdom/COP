@@ -135,7 +135,7 @@ test.describe("draft lifecycle", () => {
     expect((await getVersions(project.projectId)).length).toBe(1);
 
     await page.locator(".draft-confirm input").fill("Clarified the draft lifecycle goal");
-    await page.getByRole("button", { name: /Confirm publish/i }).click();
+    await page.getByRole("button", { name: /^(Confirm publish|Publish with warnings)$/i }).click();
 
     await expect
       .poll(async () => (await getVersions(project.projectId)).length, { timeout: 15_000 })
@@ -165,7 +165,7 @@ test.describe("draft lifecycle", () => {
     await page.goto(`/projects/${project.projectId}/draft`);
     await waitForHydration(page, ".draft-toolbar");
     await page.getByRole("button", { name: /^Publish draft$/i }).click();
-    await page.getByRole("button", { name: /Confirm publish/i }).click();
+    await page.getByRole("button", { name: /^(Confirm publish|Publish with warnings)$/i }).click();
     await expect
       .poll(async () => (await getVersions(project.projectId)).length, { timeout: 15_000 })
       .toBe(2);

@@ -1,4 +1,5 @@
 import { expect, test as base, type Page } from "@playwright/test";
+import { launchChrome } from "../scripts/safe-browser.mjs";
 
 /**
  * A project with exactly one published version: the state a real user's project
@@ -14,7 +15,18 @@ import { expect, test as base, type Page } from "@playwright/test";
  * would otherwise leave the user's LangChain reference edited.
  */
 
-export const test = base.extend<Record<string, never>>({});
+export const test = base.extend({
+  // Every browser-driven spec imports this fixture. Check the actual engine
+  // before creating a context/page, not only a CLI version during CI setup.
+  browser: async ({ headless }, provideBrowser) => {
+    const browser = await launchChrome({ headless });
+    try {
+      await provideBrowser(browser);
+    } finally {
+      await browser.close();
+    }
+  },
+});
 export { expect };
 
 export interface FirstGoal {

@@ -5,6 +5,7 @@ on:
   pull_request:
 
 env:
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
   # The test suite truncates every table between cases, so it gets a database of
   # its own. Isolation is by name, not by port: the name is what `conftest.py`
   # refuses to run against and what decides what a stray TRUNCATE can reach.
@@ -166,9 +167,7 @@ jobs:
       # `chromiumSandbox: true`, so the runner provides Chrome and the bundled
       # engine never enters the trust path.
       - name: Provide Chrome without Playwright's bundled browser
-        run: |
-          google-chrome --version || chromium --version \
-            || { echo "::error::A local Chrome/Chromium is required; bundled Playwright Chromium is disallowed."; exit 1; }
+        run: node apps/web/scripts/check-browser-security.mjs
       - name: Install the PostgreSQL client
         run: sudo apt-get update && sudo apt-get install -y postgresql-client
       - name: Start the stack

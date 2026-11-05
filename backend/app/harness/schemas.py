@@ -453,14 +453,15 @@ TARGETED_REPAIR_CODES = frozenset(
         "MISSING_VALIDATION_STEP",
         "OPERATION_WITHOUT_COMMON_FAILURES",
         "UNSUPPORTED_SPECIFIC_CLAIM",
-        # Concept-frame defects. The refiner is already allowed to rewrite
+        # Text-repairable concept-frame defects. CONCEPT_UNUSED is excluded:
+        # repairing bindings/removing entities requires structural review.
+        # The refiner is already allowed to rewrite
         # `definition`/`role`; without these codes it would be told about the
         # defect and never act on it. Bindings stay untouched, so a repair here
         # can explain a Concept but cannot silently drop it from a Stage.
         "CONCEPT_MISSING_EXPLANATION",
         "CONCEPT_MISSING_ROLE",
         "CONCEPT_CIRCULAR_DEFINITION",
-        "CONCEPT_UNUSED",
         "USER_REQUESTED_REFINEMENT",
     }
 )

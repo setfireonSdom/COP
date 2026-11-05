@@ -524,7 +524,8 @@ Concept quality contract (these are rejected mechanically, not by a reviewer):
   empty, a placeholder, or a restatement of `name`.
 - `role` must say which part of the route depends on it.
 - Every Concept you emit must be bound to at least one Stage in `stage_bindings`,
-  or be acted on by an Operation. Do not emit glossary-only entries.
+  or be acted on by an Operation that is itself bound to a Stage. Unused Operations
+  do not make glossary-only Concepts useful.
 Do not satisfy these by padding with words; a longer restatement of the name is
 still circular.
 

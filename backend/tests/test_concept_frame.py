@@ -13,7 +13,6 @@ import pytest
 from app.domain.quality import (
     CONCEPT_CIRCULAR_DEFINITION,
     CONCEPT_FRAME_CODES,
-    CONCEPT_MIN_DEFINITION_CHARS,
     CONCEPT_MISSING_EXPLANATION,
     CONCEPT_MISSING_ROLE,
     CONCEPT_UNUSED,
@@ -64,7 +63,7 @@ def codes(payload):
 
 @pytest.mark.parametrize(
     "definition",
-    ["d", "", "   ", "r", "thing", "concept", "一种东西"],
+    ["d", "", "   ", "r", "thing", "concept", "一种东西", "TODO", "待补充", "x" * 20],
 )
 def test_a_placeholder_definition_is_not_an_explanation(definition):
     assert CONCEPT_MISSING_EXPLANATION in codes(
@@ -72,15 +71,10 @@ def test_a_placeholder_definition_is_not_an_explanation(definition):
     )
 
 
-def test_the_length_boundary_is_the_rule_and_is_named_once():
-    too_short = "x" * (CONCEPT_MIN_DEFINITION_CHARS - 1)
-    at_boundary = "x" * CONCEPT_MIN_DEFINITION_CHARS
-
-    assert CONCEPT_MISSING_EXPLANATION in codes(
-        artifact([concept(definition=too_short)], stage_concepts=["concept.runtime"])
-    )
+@pytest.mark.parametrize("definition", ["停止等待响应前允许的最长时间", "A stored value."])
+def test_short_definitions_are_not_rejected_merely_for_their_length(definition):
     assert CONCEPT_MISSING_EXPLANATION not in codes(
-        artifact([concept(definition=at_boundary)], stage_concepts=["concept.runtime"])
+        artifact([concept(definition=definition)], stage_concepts=["concept.runtime"])
     )
 
 
@@ -96,6 +90,8 @@ def test_an_empty_role_is_reported_because_the_route_dependency_is_invisible():
         ("Runtime", "Runtime"),
         ("Runtime", "The Runtime concept."),
         ("Runtime", "runtime"),
+        ("Runtime", "Runtime is the concept of the Runtime thing."),
+        ("Runtime", "This is a Runtime concept."),
         ("观察与推断", "观察与推断"),
         ("观察与推断", "这个术语是观察与推断。"),
         ("观察与推断", "一种观察与推断的东西。"),
@@ -122,6 +118,7 @@ def test_a_definition_that_restates_its_own_name_is_circular(name, definition):
         ("Runtime", "The interpreter and packages that execute this script."),
         ("Runtime", "A runtime environment is not the same as the source file."),
         ("观察与推断", "观察是能指回某条材料的内容；推断是你据此提出的解释。"),
+        ("AI", "A chair supports a seated person."),
     ],
 )
 def test_a_real_explanation_mentioning_the_name_is_not_circular(name, definition):
@@ -166,7 +163,8 @@ def test_relations_alone_do_not_make_two_orphans_useful():
     assert CONCEPT_UNUSED in codes(payload)
 
 
-def test_an_operation_binding_is_real_use_even_when_no_stage_lists_it():
+@pytest.mark.parametrize("bound", [False, True])
+def test_only_a_stage_bound_operation_counts_as_concept_usage(bound):
     payload = artifact(
         [concept()],
         operations=[
@@ -179,8 +177,31 @@ def test_an_operation_binding_is_real_use_even_when_no_stage_lists_it():
             }
         ],
     )
+    if bound:
+        payload["stages"][0]["operation_refs"] = ["op.run"]
+    assert (CONCEPT_UNUSED in codes(payload)) is not bound
 
-    assert CONCEPT_UNUSED not in codes(payload)
+
+@pytest.mark.asyncio
+async def test_unused_concepts_are_reported_for_structural_review_not_sent_to_text_repair():
+    from app.harness.context import HarnessContext
+    from app.harness.schemas import TARGETED_REPAIR_CODES
+    from app.harness.steps.h110_refine import RefineStep
+
+    payload = artifact([concept()])
+    ctx = HarnessContext(run_id="r", project_id="p", input={}, settings={})
+    ctx.artifact = payload
+    ctx.critic_report = {"severity": "major", "issues": concept_frame_failures(payload)}
+
+    class NoCalls:
+        async def complete_structured(self, **kwargs):
+            pytest.fail("A text-only refiner cannot repair concept bindings")
+
+    result = await RefineStep().execute(ctx, NoCalls())
+    assert CONCEPT_UNUSED not in TARGETED_REPAIR_CODES
+    assert result.metrics["manual_review"] == 1
+    assert "structural review" in result.warnings[0]
+    assert CONCEPT_UNUSED in codes(payload)
 
 
 def test_a_broken_concept_frame_reaches_the_refiner_as_major():
